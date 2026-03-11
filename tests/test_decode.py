@@ -64,7 +64,7 @@ class TestDecodeBinaryRow:
         fields = [{"name": "a", "datatype": "int"}, {"name": "b", "datatype": "int"}]
         fmt, _, _ = build_struct_format(fields, binary2=False)
         row_bytes = struct.pack(">ii", 42, 100)
-        out = decode_binary_row(fmt, row_bytes)
+        out = decode_binary_row(fmt, row_bytes, 0)
         assert out == (42, 100)
 
     def test_double_float(self):
@@ -74,7 +74,7 @@ class TestDecodeBinaryRow:
         ]
         fmt, _, _ = build_struct_format(fields, binary2=False)
         row_bytes = struct.pack(">df", 180.5, 12.25)
-        out = decode_binary_row(fmt, row_bytes)
+        out = decode_binary_row(fmt, row_bytes, 0)
         assert out[0] == 180.5
         assert out[1] == pytest.approx(12.25)
 
@@ -86,7 +86,7 @@ class TestDecodeBinary2Row:
         mask = bytes([0])  # no nulls
         data = struct.pack(">ii", 1, 2)
         row_bytes = mask + data
-        out = decode_binary2_row(fmt, null_bytes, row_bytes)
+        out = decode_binary2_row(fmt, null_bytes, row_bytes, 0)
         assert out == (1, 2)
 
     def test_two_int_first_null(self):
@@ -96,13 +96,13 @@ class TestDecodeBinary2Row:
         mask = bytes([0x80])  # column 0 null
         data = struct.pack(">ii", 0, 99)
         row_bytes = mask + data
-        out = decode_binary2_row(fmt, null_bytes, row_bytes)
+        out = decode_binary2_row(fmt, null_bytes, row_bytes, 0)
         assert out[0] is None
         assert out[1] == 99
 
     def test_null_mask_bytes_zero_raises(self):
         with pytest.raises(ValueError, match="BINARY2 requires null_mask_bytes"):
-            decode_binary2_row(">i", 0, struct.pack(">i", 1))
+            decode_binary2_row(">i", 0, struct.pack(">i", 1), 0)
 
 
 class TestCastTabledataValue:

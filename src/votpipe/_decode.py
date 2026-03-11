@@ -66,41 +66,38 @@ def build_struct_format(fields: list[dict], binary2: bool) -> tuple[str, int, in
     return (struct_fmt, null_mask_bytes, row_size)
 
 
-def decode_binary2_row(
-    struct_fmt: str,
-    null_mask_bytes: int,
-    row_bytes: bytes,
-) -> tuple:
-    """Unpack a single BINARY2 row into a positional tuple.
+def apply_null_mask(raw_values: tuple, mask_bytes: bytes) -> tuple:
+    """Apply a BINARY2 null-flag bitmask to unpacked struct values.
 
-    Null-masked positions become None. Bytes values are decoded to str.
+    For each field, if the corresponding bit in *mask_bytes* is set the value
+    becomes ``None``.  Otherwise ``bytes`` values (fixed-length char fields)
+    are decoded to UTF-8 strings with trailing whitespace stripped.
     """
-    if null_mask_bytes == 0:
-        raise ValueError("BINARY2 requires null_mask_bytes > 0")
-    mask_bytes = row_bytes[:null_mask_bytes]
-    data_bytes = row_bytes[null_mask_bytes:]
-    raw_values = struct.unpack(struct_fmt, data_bytes)
     return tuple(
         None
-        if (mask_bytes[i // 8] & (1 << (7 - i % 8))) != 0
-        else (val.decode("utf-8").strip() if isinstance(val, bytes) else val)
+        if (mask_bytes[i // 8] & (1 << (7 - (i % 8)))) != 0
+        else (val.decode("utf-8").rstrip() if isinstance(val, bytes) else val)
         for i, val in enumerate(raw_values)
     )
 
 
-def decode_binary_row(
-    struct_fmt: str,
-    row_bytes: bytes,
-) -> tuple:
-    """Unpack a single BINARY row (no null mask) into a positional tuple.
+def decode_binary_row(struct_fmt, buf, offset):
+    return struct.unpack_from(struct_fmt, buf, offset)
 
-    Bytes values are decoded to str.
-    """
-    raw_values = struct.unpack(struct_fmt, row_bytes)
-    return tuple(
-        val.decode("utf-8").strip() if isinstance(val, bytes) else val
-        for val in raw_values
-    )
+
+def decode_binary2_row(
+    struct_fmt: str,
+    null_mask_bytes: int,
+    buf,
+    offset: int,
+) -> tuple:
+    """Unpack a single BINARY2 row from a buffer at a given offset."""
+    if null_mask_bytes == 0:
+        raise ValueError("BINARY2 requires null_mask_bytes > 0")
+
+    mask_bytes = buf[offset : offset + null_mask_bytes]
+    raw_values = struct.unpack_from(struct_fmt, buf, offset + null_mask_bytes)
+    return apply_null_mask(raw_values, mask_bytes)
 
 
 def cast_tabledata_value(raw_str: str, datatype: str) -> object:

@@ -66,11 +66,12 @@ class _SAXHandler(xml.sax.ContentHandler):
 
         # BINARY/BINARY2 state
         self._in_stream = False
-        self._b64_buffer = ""
-        self._byte_buffer = bytearray()
         self._struct_fmt = ""
         self._null_mask_bytes = 0
         self._row_size = 0
+        self._byte_buffer = bytearray()
+        self._byte_pos = 0
+        self._b64_text = ""
 
     def _flush_batch(self) -> None:
         if self._batch:
@@ -108,6 +109,9 @@ class _SAXHandler(xml.sax.ContentHandler):
             self._cell_text = []
         elif local == "STREAM":
             self._in_stream = True
+            self._b64_text = ""
+            self._byte_buffer = bytearray()
+            self._byte_pos = 0
             binary2 = self.format == "BINARY2"
             self._struct_fmt, self._null_mask_bytes, self._row_size = (
                 build_struct_format(self.fields, binary2=binary2)
@@ -138,36 +142,62 @@ class _SAXHandler(xml.sax.ContentHandler):
             self._cell_text = []
         elif local == "STREAM":
             self._in_stream = False
+
+            if self._b64_text:
+                self._byte_buffer.extend(base64.b64decode(self._b64_text))
+                self._b64_text = ""
+                self._extract_binary_rows()
+
+            remaining = len(self._byte_buffer) - self._byte_pos
+            if remaining != 0:
+                raise ValueError(
+                    f"Trailing incomplete binary row at end of STREAM: "
+                    f"{remaining} bytes remain"
+                )
+
             self._flush_batch()
 
     def characters(self, content):
         if self._in_td:
             self._cell_text.append(content)
-        elif self._in_stream:
-            self._b64_buffer += "".join(content.split())
-            valid_len = (len(self._b64_buffer) // 4) * 4
-            if valid_len > 0:
-                chunk = self._b64_buffer[:valid_len]
-                self._b64_buffer = self._b64_buffer[valid_len:]
-                self._byte_buffer += base64.b64decode(chunk)
-                self._extract_binary_rows()
+            return
+        if not self._in_stream:
+            return
+
+        cleaned = "".join(content.split())
+        if not cleaned:
+            return
+
+        self._b64_text += cleaned
+        valid_len = (len(self._b64_text) // 4) * 4
+        if valid_len:
+            self._byte_buffer.extend(base64.b64decode(self._b64_text[:valid_len]))
+            self._b64_text = self._b64_text[valid_len:]
+            self._extract_binary_rows()
 
     def _extract_binary_rows(self):
-        while len(self._byte_buffer) >= self._row_size:
-            row_bytes = bytes(self._byte_buffer[: self._row_size])
-            self._byte_buffer = self._byte_buffer[self._row_size :]
-            if self.format == "BINARY2":
-                row = decode_binary2_row(
-                    self._struct_fmt,
-                    self._null_mask_bytes,
-                    row_bytes,
-                )
+        buf = self._byte_buffer
+        pos = self._byte_pos
+        row_size = self._row_size
+        fmt = self.format
+        struct_fmt = self._struct_fmt
+        null_mask_bytes = self._null_mask_bytes
+        append_row = self._append_row
+
+        end = len(buf)
+        while end - pos >= row_size:
+            if fmt == "BINARY2":
+                row = decode_binary2_row(struct_fmt, null_mask_bytes, buf, pos)
             else:
-                row = decode_binary_row(
-                    self._struct_fmt,
-                    row_bytes,
-                )
-            self._append_row(row)
+                row = decode_binary_row(struct_fmt, buf, pos)
+            append_row(row)
+            pos += row_size
+
+        self._byte_pos = pos
+
+        if pos and (pos > 65536 or pos > len(buf) // 2):
+            self._byte_buffer = bytearray(buf[pos:])
+            self._byte_pos = 0
 
 
 def parse_votable(
