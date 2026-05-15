@@ -19,6 +19,16 @@ BINARY_TYPE_MAP = {
 }
 
 
+def has_variable_length_fields(fields: list[dict]) -> bool:
+    """Return True when a BINARY/BINARY2 row cannot use a fixed struct layout."""
+    return any(_is_variable_length_field(field) for field in fields)
+
+
+def _is_variable_length_field(field: dict) -> bool:
+    arraysize = (field.get("arraysize") or "1").strip()
+    return "*" in arraysize
+
+
 def _field_struct_char(field: dict) -> str:
     """Struct format for a single field. Raises NotImplementedError for unsupported types."""
     datatype = (field.get("datatype") or "int").strip().lower()
@@ -98,6 +108,105 @@ def decode_binary2_row(
     mask_bytes = buf[offset : offset + null_mask_bytes]
     raw_values = struct.unpack_from(struct_fmt, buf, offset + null_mask_bytes)
     return apply_null_mask(raw_values, mask_bytes)
+
+
+def decode_variable_binary_row(
+    fields: list[dict],
+    buf,
+    offset: int,
+    *,
+    binary2: bool,
+) -> tuple[tuple | None, int]:
+    """Decode one possibly variable-length BINARY/BINARY2 row.
+
+    Variable-length fields are prefixed by a big-endian 32-bit element count in
+    VOTable BINARY streams. If the current buffer does not yet contain a whole
+    row, returns ``(None, offset)`` so the streaming parser can wait for more
+    bytes.
+    """
+    null_mask_bytes = ((len(fields) + 7) // 8) if binary2 else 0
+    if len(buf) - offset < null_mask_bytes:
+        return None, offset
+
+    pos = offset
+    mask_bytes = b""
+    if binary2:
+        mask_bytes = bytes(buf[pos : pos + null_mask_bytes])
+        pos += null_mask_bytes
+
+    values: list[object] = []
+    for index, field in enumerate(fields):
+        decoded = _decode_field_value(field, buf, pos)
+        if decoded is None:
+            return None, offset
+        value, pos = decoded
+        if binary2 and (mask_bytes[index // 8] & (1 << (7 - (index % 8)))) != 0:
+            value = None
+        values.append(value)
+
+    return tuple(values), pos
+
+
+def _decode_field_value(field: dict, buf, offset: int) -> tuple[object, int] | None:
+    datatype = (field.get("datatype") or "int").strip().lower()
+    arraysize = (field.get("arraysize") or "1").strip()
+
+    if datatype in ("char", "unicodechar"):
+        return _decode_char_value(datatype, arraysize, buf, offset)
+    if "*" in arraysize:
+        raise NotImplementedError(
+            f"Variable-length arrays are only supported for char fields: {datatype!r}"
+        )
+
+    fmt = BINARY_TYPE_MAP.get(datatype)
+    if fmt is None:
+        raise NotImplementedError(f"Unsupported BINARY datatype: {datatype!r}")
+    size = struct.calcsize(">" + fmt)
+    if len(buf) - offset < size:
+        return None
+    return struct.unpack_from(">" + fmt, buf, offset)[0], offset + size
+
+
+def _decode_char_value(
+    datatype: str,
+    arraysize: str,
+    buf,
+    offset: int,
+) -> tuple[str | None, int] | None:
+    if "x" in arraysize:
+        raise NotImplementedError(f"Unsupported arraysize for char: {arraysize!r}")
+
+    if "*" in arraysize:
+        if len(buf) - offset < 4:
+            return None
+        count = struct.unpack_from(">i", buf, offset)[0]
+        if count < 0:
+            raise ValueError(f"Invalid variable-length char count: {count}")
+        data_offset = offset + 4
+        byte_count = count if datatype == "char" else count * 2
+        if len(buf) - data_offset < byte_count:
+            return None
+        raw = bytes(buf[data_offset : data_offset + byte_count])
+        return _decode_char_bytes(raw, datatype), data_offset + byte_count
+
+    try:
+        count = int(arraysize)
+    except ValueError:
+        raise NotImplementedError(
+            f"Unsupported arraysize for char: {arraysize!r}"
+        ) from None
+    if count < 1:
+        raise NotImplementedError(f"Invalid char arraysize: {count}")
+    byte_count = count if datatype == "char" else count * 2
+    if len(buf) - offset < byte_count:
+        return None
+    raw = bytes(buf[offset : offset + byte_count])
+    return _decode_char_bytes(raw, datatype), offset + byte_count
+
+
+def _decode_char_bytes(raw: bytes, datatype: str) -> str:
+    encoding = "utf-16-be" if datatype == "unicodechar" else "utf-8"
+    return raw.decode(encoding).rstrip()
 
 
 def cast_tabledata_value(raw_str: str, datatype: str) -> object:

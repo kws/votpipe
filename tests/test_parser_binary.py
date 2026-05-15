@@ -61,3 +61,22 @@ def test_binary_multiple_rows():
     assert [r[0] for r in collector.rows] == [0, 1, 2, 3, 4]
     assert collector.get_field("x")["datatype"] == fields[0]["datatype"]
     assert collector.calls == 1
+
+
+def test_binary_variable_length_char():
+    """BINARY with a variable-length char column."""
+    fields = [
+        {"name": "id", "datatype": "int"},
+        {"name": "flags", "datatype": "char", "arraysize": "*"},
+        {"name": "score", "datatype": "double"},
+    ]
+    row1 = struct.pack(">i", 1) + struct.pack(">i", 5) + b"abc  " + struct.pack(">d", 1.5)
+    row2 = struct.pack(">i", 2) + struct.pack(">i", 3) + b"xyz" + struct.pack(">d", 2.5)
+    xml = binary_vot(fields, [row1, row2])
+
+    collector = BatchCollector()
+    parse_votable(io.BytesIO(xml), on_batch=collector.on_batch, batch_size=1)
+
+    assert collector.rows == [(1, "abc", 1.5), (2, "xyz", 2.5)]
+    assert collector.get_field("flags")["arraysize"] == "*"
+    assert collector.calls == 2

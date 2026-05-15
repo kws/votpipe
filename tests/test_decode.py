@@ -9,6 +9,8 @@ from votpipe._decode import (
     cast_tabledata_value,
     decode_binary2_row,
     decode_binary_row,
+    decode_variable_binary_row,
+    has_variable_length_fields,
 )
 
 
@@ -58,6 +60,12 @@ class TestBuildStructFormat:
         with pytest.raises(NotImplementedError, match="Variable-length char"):
             build_struct_format(fields, binary2=False)
 
+    def test_detect_variable_length_fields(self):
+        assert has_variable_length_fields(
+            [{"name": "x", "datatype": "char", "arraysize": "*"}]
+        )
+        assert not has_variable_length_fields([{"name": "x", "datatype": "char"}])
+
 
 class TestDecodeBinaryRow:
     def test_two_int(self):
@@ -103,6 +111,58 @@ class TestDecodeBinary2Row:
     def test_null_mask_bytes_zero_raises(self):
         with pytest.raises(ValueError, match="BINARY2 requires null_mask_bytes"):
             decode_binary2_row(">i", 0, struct.pack(">i", 1), 0)
+
+
+class TestDecodeVariableBinaryRow:
+    def test_mixed_binary_row_with_variable_char(self):
+        fields = [
+            {"name": "id", "datatype": "int"},
+            {"name": "flags", "datatype": "char", "arraysize": "*"},
+            {"name": "mag", "datatype": "float"},
+        ]
+        row_bytes = struct.pack(">i", 7)
+        row_bytes += struct.pack(">i", 5) + b"abc  "
+        row_bytes += struct.pack(">f", 12.5)
+
+        row, offset = decode_variable_binary_row(
+            fields,
+            row_bytes,
+            0,
+            binary2=False,
+        )
+
+        assert row == (7, "abc", 12.5)
+        assert offset == len(row_bytes)
+
+    def test_incomplete_variable_char_row_waits_for_more_bytes(self):
+        fields = [{"name": "flags", "datatype": "char", "arraysize": "*"}]
+        row, offset = decode_variable_binary_row(
+            fields,
+            struct.pack(">i", 5) + b"ab",
+            0,
+            binary2=False,
+        )
+
+        assert row is None
+        assert offset == 0
+
+    def test_binary2_null_variable_char(self):
+        fields = [
+            {"name": "id", "datatype": "int"},
+            {"name": "flags", "datatype": "char", "arraysize": "*"},
+        ]
+        mask = bytes([0x40])
+        row_bytes = mask + struct.pack(">i", 9) + struct.pack(">i", 0)
+
+        row, offset = decode_variable_binary_row(
+            fields,
+            row_bytes,
+            0,
+            binary2=True,
+        )
+
+        assert row == (9, None)
+        assert offset == len(row_bytes)
 
 
 class TestCastTabledataValue:

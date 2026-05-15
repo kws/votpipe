@@ -99,3 +99,21 @@ def test_binary2_multiple_rows_mixed_nulls():
     assert collector.get_field("id")["datatype"] == fields[0]["datatype"]
     assert collector.get_field("val")["datatype"] == fields[1]["datatype"]
     assert collector.calls == 1
+
+
+def test_binary2_variable_length_char_with_null():
+    """BINARY2 with a variable-length char column and a null mask."""
+    fields = [
+        {"name": "id", "datatype": "int"},
+        {"name": "flags", "datatype": "char", "arraysize": "*"},
+    ]
+    row1 = bytes([0]) + struct.pack(">i", 1) + struct.pack(">i", 4) + b"keep"
+    row2 = bytes([0x40]) + struct.pack(">i", 2) + struct.pack(">i", 0)
+    xml = binary2_vot(fields, [row1, row2])
+
+    collector = BatchCollector()
+    parse_votable(io.BytesIO(xml), on_batch=collector.on_batch)
+
+    assert collector.rows == [(1, "keep"), (2, None)]
+    assert collector.get_field("flags")["arraysize"] == "*"
+    assert collector.calls == 1

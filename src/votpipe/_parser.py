@@ -18,6 +18,8 @@ from votpipe._decode import (
     cast_tabledata_value,
     decode_binary2_row,
     decode_binary_row,
+    decode_variable_binary_row,
+    has_variable_length_fields,
 )
 
 DEFAULT_BATCH_SIZE = 8192
@@ -69,6 +71,7 @@ class _SAXHandler(xml.sax.ContentHandler):
         self._struct_fmt = ""
         self._null_mask_bytes = 0
         self._row_size = 0
+        self._variable_rows = False
         self._byte_buffer = bytearray()
         self._byte_pos = 0
         self._b64_text = ""
@@ -113,9 +116,15 @@ class _SAXHandler(xml.sax.ContentHandler):
             self._byte_buffer = bytearray()
             self._byte_pos = 0
             binary2 = self.format == "BINARY2"
-            self._struct_fmt, self._null_mask_bytes, self._row_size = (
-                build_struct_format(self.fields, binary2=binary2)
-            )
+            self._variable_rows = has_variable_length_fields(self.fields)
+            if self._variable_rows:
+                self._struct_fmt = ""
+                self._null_mask_bytes = ((len(self.fields) + 7) // 8) if binary2 else 0
+                self._row_size = 0
+            else:
+                self._struct_fmt, self._null_mask_bytes, self._row_size = (
+                    build_struct_format(self.fields, binary2=binary2)
+                )
 
     def endElement(self, name):  # noqa: N802 (SAX API)
         local = name.split(":")[-1].split("}")[-1]
@@ -185,13 +194,27 @@ class _SAXHandler(xml.sax.ContentHandler):
         append_row = self._append_row
 
         end = len(buf)
-        while end - pos >= row_size:
-            if fmt == "BINARY2":
-                row = decode_binary2_row(struct_fmt, null_mask_bytes, buf, pos)
-            else:
-                row = decode_binary_row(struct_fmt, buf, pos)
-            append_row(row)
-            pos += row_size
+        if self._variable_rows:
+            binary2 = fmt == "BINARY2"
+            while pos < end:
+                row, next_pos = decode_variable_binary_row(
+                    self.fields,
+                    buf,
+                    pos,
+                    binary2=binary2,
+                )
+                if row is None:
+                    break
+                append_row(row)
+                pos = next_pos
+        else:
+            while end - pos >= row_size:
+                if fmt == "BINARY2":
+                    row = decode_binary2_row(struct_fmt, null_mask_bytes, buf, pos)
+                else:
+                    row = decode_binary_row(struct_fmt, buf, pos)
+                append_row(row)
+                pos += row_size
 
         self._byte_pos = pos
 
