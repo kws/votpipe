@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "votpipe"
-version = "0.2.1"
+version = "0.3.0.dev0"
 description = "Lightweight streaming parser for VOTable files; convert to Parquet, CSV, or ECSV with optional filtering."
 readme = "README.md"
 requires-python = ">=3.10"

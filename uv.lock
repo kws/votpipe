@@ -794,7 +794,7 @@ wheels = [
 
 [[package]]
 name = "votpipe"
-version = "0.2.1"
+version = "0.3.0.dev0"
 source = { editable = "." }
 
 [package.optional-dependencies]
